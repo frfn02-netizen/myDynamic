@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::thread;
+use std::time::Duration;
 
 use futures_lite::StreamExt;
 use tracing::{debug, warn};
@@ -14,6 +15,7 @@ const NOTIFICATIONS_INTERFACE: &str = "org.freedesktop.Notifications";
 const MIN_DISPLAY_MS: u64 = 3_000;
 const MAX_DISPLAY_MS: u64 = 12_000;
 const DEFAULT_DISPLAY_MS: u64 = 6_000;
+const RETRY_DELAY: Duration = Duration::from_secs(30);
 
 type NotifyArgs = (
     String,
@@ -35,18 +37,25 @@ struct NotificationRecord {
 pub fn spawn(tx: EventSender) {
     let result = thread::Builder::new()
         .name("glass-island-notifications".into())
-        .spawn(move || {
-            if let Err(error) = zbus::block_on(run(tx)) {
-                warn!(%error, "notification service stopped");
-            }
-        });
+        .spawn(move || run(tx));
 
     if let Err(error) = result {
         warn!(%error, "failed to start notification service");
     }
 }
 
-async fn run(tx: EventSender) -> zbus::Result<()> {
+fn run(tx: EventSender) {
+    loop {
+        match zbus::block_on(run_once(tx.clone())) {
+            Ok(()) => debug!("notification monitor ended; reconnecting"),
+            Err(error) => warn!(%error, "notification monitor unavailable; retrying"),
+        }
+        let _ = tx.send(AppEvent::Notification(None));
+        thread::sleep(RETRY_DELAY);
+    }
+}
+
+async fn run_once(tx: EventSender) -> zbus::Result<()> {
     let connection = Connection::session().await?;
 
     let notify_rule = MatchRule::builder()
@@ -81,11 +90,7 @@ async fn run(tx: EventSender) -> zbus::Result<()> {
         )
         .await;
 
-    if let Err(error) = become_monitor {
-        warn!(%error, "unable to become a notification monitor; notifications disabled");
-        return Ok(());
-    }
-
+    become_monitor?;
     debug!("passive notification monitor active");
     let mut stream = MessageStream::from(connection);
 

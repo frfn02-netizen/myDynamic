@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::thread;
+use std::time::Duration;
 
 use futures_lite::{StreamExt, future};
 use tracing::{debug, warn};
@@ -13,18 +15,26 @@ const DBUS_INTERFACE: &str = "org.freedesktop.DBus";
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
 const MPRIS_PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+const RETRY_DELAY: Duration = Duration::from_secs(5);
 
 pub fn spawn(tx: EventSender) {
     let result = thread::Builder::new()
         .name("glass-island-mpris".into())
-        .spawn(move || {
-            if let Err(error) = zbus::block_on(run(tx)) {
-                warn!(%error, "MPRIS media service stopped");
-            }
-        });
+        .spawn(move || run(tx));
 
     if let Err(error) = result {
         warn!(%error, "failed to start MPRIS media service");
+    }
+}
+
+fn run(tx: EventSender) {
+    loop {
+        match zbus::block_on(run_once(tx.clone())) {
+            Ok(()) => debug!("MPRIS connection ended; reconnecting"),
+            Err(error) => warn!(%error, "MPRIS media service unavailable; retrying"),
+        }
+        let _ = tx.send(AppEvent::Media(None));
+        thread::sleep(RETRY_DELAY);
     }
 }
 
@@ -33,7 +43,7 @@ enum Wake {
     Names(bool),
 }
 
-async fn run(tx: EventSender) -> zbus::Result<()> {
+async fn run_once(tx: EventSender) -> zbus::Result<()> {
     let connection = zbus::Connection::session().await?;
     let dbus = Proxy::new(&connection, DBUS_SERVICE, DBUS_PATH, DBUS_INTERFACE).await?;
     let mut names = dbus.receive_signal("NameOwnerChanged").await?;
@@ -44,6 +54,7 @@ async fn run(tx: EventSender) -> zbus::Result<()> {
         let players = list_players(&dbus).await;
         let Some(player) = select_player(&connection, &players).await else {
             if last.take().is_some() {
+                debug!("no MPRIS player; clearing media");
                 let _ = tx.send(AppEvent::Media(None));
             }
             if !next_interesting_name_change(&mut names).await {
@@ -60,6 +71,7 @@ async fn run(tx: EventSender) -> zbus::Result<()> {
             Err(error) => {
                 debug!(%error, "failed to subscribe to MPRIS properties");
                 if last.take().is_some() {
+                    debug!("MPRIS properties unavailable; clearing media");
                     let _ = tx.send(AppEvent::Media(None));
                 }
                 if !next_interesting_name_change(&mut names).await {
@@ -83,6 +95,7 @@ async fn run(tx: EventSender) -> zbus::Result<()> {
                 }
                 Wake::Player(None) => {
                     if last.take().is_some() {
+                        debug!("MPRIS properties stream ended; clearing media");
                         let _ = tx.send(AppEvent::Media(None));
                     }
                     break;
@@ -239,11 +252,30 @@ async fn emit_player(
             .and_then(|value| Vec::<String>::try_from(value).ok())
             .map(|artists| artists.join(", "))
             .unwrap_or_default();
+        let length_us = metadata.get("mpris:length").and_then(|value| {
+            if let Some(value) = value.try_clone().ok().and_then(|v| u64::try_from(v).ok()) {
+                return Some(value);
+            }
+            value
+                .try_clone()
+                .ok()
+                .and_then(|v| i64::try_from(v).ok())
+                .and_then(|v| u64::try_from(v).ok())
+        });
+        let art_path = file_url_to_path(&metadata_string(&metadata, "mpris:artUrl"));
+        let position_us = proxy
+            .get_property::<i64>("Position")
+            .await
+            .ok()
+            .and_then(|value| u64::try_from(value).ok());
 
         Some(MediaStatus {
             title,
             artist,
             playing,
+            length_us,
+            position_us,
+            art_path,
         })
     };
 
@@ -265,4 +297,68 @@ fn metadata_string(metadata: &HashMap<String, OwnedVariant>, key: &str) -> Strin
         .and_then(|value| value.try_clone().ok())
         .and_then(|value| String::try_from(value).ok())
         .unwrap_or_default()
+}
+
+fn file_url_to_path(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("file://")?;
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+
+    let bytes = rest.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let high = hex_digit(bytes[index + 1])?;
+            let low = hex_digit(bytes[index + 2])?;
+            decoded.push(high << 4 | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    let path = String::from_utf8(decoded).ok()?;
+    Path::new(&path).is_file().then_some(path)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_file_urls_are_decoded() {
+        let path =
+            std::env::temp_dir().join(format!("glass island art test {}.png", std::process::id()));
+        std::fs::write(&path, b"not really an image").expect("write temp file");
+        let encoded = path.to_string_lossy().replace(' ', "%20");
+        let url = format!("file://{encoded}");
+        assert_eq!(
+            file_url_to_path(&url),
+            Some(path.to_string_lossy().into_owned())
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn remote_and_missing_urls_are_ignored() {
+        assert_eq!(file_url_to_path("https://example.test/art.png"), None);
+        assert_eq!(file_url_to_path("file:///definitely/not/here.png"), None);
+        assert_eq!(file_url_to_path("not-a-url"), None);
+    }
 }

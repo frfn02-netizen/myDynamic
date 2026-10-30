@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Glass Island
+GenericName=Desktop Island
+Comment=A floating Liquid Glass island for KDE Plasma on Wayland
+Exec=@EXEC@
+Icon=glass-island
+Terminal=false
+Categories=Utility;
+Keywords=island;media;battery;volume;notification;system;wayland;kde;
+StartupNotify=false
+StartupWMClass=glass-island
+OnlyShowIn=KDE;
+X-KDE-StartupNotify=false

@@ -13,6 +13,11 @@ use platform::IslandPlatform;
 use platform::wayland::WaylandRuntime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(_instance) = platform::SingleInstance::acquire()? else {
+        eprintln!("Glass Island is already running in this session.");
+        return Ok(());
+    };
+
     let startup = std::time::Instant::now();
 
     tracing_subscriber::fmt()

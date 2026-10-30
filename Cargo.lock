@@ -1231,12 +1231,14 @@ dependencies = [
 
 [[package]]
 name = "glass-island"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "async-io",
  "bytemuck",
  "calloop 0.13.0",
  "calloop-wayland-source",
  "futures-lite",
+ "image",
  "pulseaudio",
  "slint",
  "slint-build",

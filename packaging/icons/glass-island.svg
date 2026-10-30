@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Glass Island</title>
+  <desc id="desc">A dark rounded glass island with a blue status light and media lines</desc>
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b4252"/>
+      <stop offset="0.48" stop-color="#1c2028"/>
+      <stop offset="1" stop-color="#0b0d12"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="88" width="224" height="80" rx="40" fill="url(#glass)" stroke="#ffffff" stroke-opacity="0.18"/>
+  <rect x="18" y="90" width="220" height="76" rx="38" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+  <rect x="48" y="90" width="160" height="2" rx="1" fill="url(#shine)"/>
+  <circle cx="64" cy="128" r="10" fill="#8ab4ff"/>
+  <circle cx="64" cy="128" r="5" fill="#dbe8ff" fill-opacity="0.75"/>
+  <rect x="88" y="121" width="88" height="7" rx="3.5" fill="#f4f6ff" fill-opacity="0.95"/>
+  <rect x="88" y="136" width="58" height="5" rx="2.5" fill="#aab5c8" fill-opacity="0.75"/>
+  <rect x="190" y="118" width="32" height="20" rx="10" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.12"/>
+  <rect x="199" y="125" width="14" height="6" rx="3" fill="#9fd8b8"/>
+</svg>

@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::io::BufReader;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pulseaudio::protocol::{
     self, Command, CommandReply, GetSinkInfo, Prop, Props, ServerInfo, SinkInfo, SubscriptionMask,
@@ -13,6 +13,7 @@ use crate::core::{AppEvent, EventSender, VolumeStatus};
 
 const CLIENT_NAME: &str = "glass-island";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VolumeControl {
@@ -117,9 +118,12 @@ impl Connection {
 }
 
 fn run_events(tx: EventSender, refresh: Sender<VolumeControl>) {
-    if let Err(error) = run_events_inner(refresh) {
-        warn!(%error, "volume event service stopped");
-        let _ = tx.send(AppEvent::Volume(None));
+    loop {
+        if let Err(error) = run_events_inner(refresh.clone()) {
+            warn!(%error, "volume event service unavailable; retrying");
+            let _ = tx.send(AppEvent::Volume(None));
+        }
+        thread::sleep(RETRY_DELAY);
     }
 }
 
@@ -140,6 +144,9 @@ fn run_events_inner(refresh: Sender<VolumeControl>) -> Result<(), Box<dyn std::e
         )
         .into());
     }
+    // A previous query connection may have died while this subscription was
+    // being re-established.
+    let _ = refresh.send(VolumeControl::Refresh);
 
     loop {
         let (_, command) = protocol::read_command_message(&mut events.reader, events.version)?;
@@ -169,49 +176,92 @@ fn run_events_inner(refresh: Sender<VolumeControl>) -> Result<(), Box<dyn std::e
 }
 
 fn run_query(tx: EventSender, control: Receiver<VolumeControl>) {
-    let mut query = match Connection::connect("query") {
-        Ok(connection) => connection,
-        Err(error) => {
-            warn!(%error, "volume query service unavailable");
-            let _ = tx.send(AppEvent::Volume(None));
-            return;
-        }
-    };
-
     let mut last = None;
     let mut expanded = false;
 
     loop {
-        if !expanded {
-            match control.recv() {
-                Ok(VolumeControl::Expanded(value)) => expanded = value,
-                Ok(VolumeControl::Refresh) => {}
-                Err(_) => return,
+        let mut query = match Connection::connect("query") {
+            Ok(connection) => connection,
+            Err(error) => {
+                warn!(%error, "volume query service unavailable; retrying");
+                let _ = tx.send(AppEvent::Volume(None));
+                if !wait_for_retry(&control, &mut expanded) {
+                    return;
+                }
+                continue;
             }
-            if expanded {
-                refresh_volume(&mut query, &tx, &mut last);
+        };
+
+        if expanded && let Err(error) = refresh_volume(&mut query, &tx, &mut last) {
+            warn!(%error, "failed to refresh output volume");
+            let _ = tx.send(AppEvent::Volume(None));
+            if !wait_for_retry(&control, &mut expanded) {
+                return;
             }
             continue;
         }
 
-        match control.recv_timeout(REFRESH_INTERVAL) {
-            Ok(VolumeControl::Expanded(false)) => expanded = false,
-            Ok(VolumeControl::Expanded(true)) | Ok(VolumeControl::Refresh) => {
-                refresh_volume(&mut query, &tx, &mut last);
+        loop {
+            if !expanded {
+                match control.recv() {
+                    Ok(VolumeControl::Expanded(value)) => expanded = value,
+                    Ok(VolumeControl::Refresh) => {}
+                    Err(_) => return,
+                }
+                if expanded && let Err(error) = refresh_volume(&mut query, &tx, &mut last) {
+                    warn!(%error, "failed to refresh output volume");
+                    break;
+                }
+                continue;
             }
-            Err(RecvTimeoutError::Timeout) => {
-                refresh_volume(&mut query, &tx, &mut last);
+
+            match control.recv_timeout(REFRESH_INTERVAL) {
+                Ok(VolumeControl::Expanded(false)) => expanded = false,
+                Ok(VolumeControl::Expanded(true)) | Ok(VolumeControl::Refresh) => {
+                    if let Err(error) = refresh_volume(&mut query, &tx, &mut last) {
+                        warn!(%error, "failed to refresh output volume");
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Err(error) = refresh_volume(&mut query, &tx, &mut last) {
+                        warn!(%error, "failed to refresh output volume");
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
             }
-            Err(RecvTimeoutError::Disconnected) => return,
+        }
+
+        let _ = tx.send(AppEvent::Volume(None));
+        if !wait_for_retry(&control, &mut expanded) {
+            return;
         }
     }
 }
 
-fn refresh_volume(query: &mut Connection, tx: &EventSender, last: &mut Option<VolumeStatus>) {
-    if let Err(error) = emit_current(query, tx, last) {
-        warn!(%error, "failed to refresh output volume");
-        let _ = tx.send(AppEvent::Volume(None));
+fn wait_for_retry(control: &Receiver<VolumeControl>, expanded: &mut bool) -> bool {
+    let deadline = Instant::now() + RETRY_DELAY;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        match control.recv_timeout(remaining) {
+            Ok(VolumeControl::Expanded(value)) => *expanded = value,
+            Ok(VolumeControl::Refresh) => {}
+            Err(RecvTimeoutError::Timeout) => return true,
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
     }
+}
+
+fn refresh_volume(
+    query: &mut Connection,
+    tx: &EventSender,
+    last: &mut Option<VolumeStatus>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    emit_current(query, tx, last)
 }
 
 fn channel_volume_level(channels: &[pulseaudio::protocol::Volume]) -> f32 {

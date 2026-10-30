@@ -11,6 +11,8 @@
 .vscode/
 *.swp
 *.swo
+*~
+.#*
 *.sublime-workspace
 .opencode/
 
@@ -31,6 +33,8 @@ desktop.ini
 # Temporary screenshots and captures
 /screenshots/
 /captures/
+/screenshot*.png
+/Screenshot*.png
 *.tmp
 
 # Local benchmark artifacts

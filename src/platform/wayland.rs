@@ -246,6 +246,12 @@ pub struct WaylandState {
     configured: bool,
     pointer: Option<wl_pointer::WlPointer>,
     anim_timer_active: bool,
+    progress_timer_active: bool,
+    notification_visible: bool,
+    media_playing: bool,
+    media_length_us: u64,
+    media_progress_base: Option<(u64, u64, Instant)>,
+    last_art_path: Option<String>,
     app_state: AppState,
 }
 
@@ -446,6 +452,62 @@ impl WaylandState {
         if self.shared.borrow().animation.is_some() {
             self.schedule_animation_timer();
         }
+        self.ensure_progress_timer();
+    }
+
+    fn ensure_progress_timer(&mut self) {
+        if self.progress_timer_active
+            || self.notification_visible
+            || !self.shared.borrow().expanded
+            || !self.media_playing
+            || self.media_length_us == 0
+        {
+            return;
+        }
+
+        self.progress_timer_active = true;
+        debug!("media progress timer started");
+        let timer = Timer::from_duration(Duration::from_secs(1));
+        let result = self
+            .loop_handle
+            .insert_source(timer, |_, _, state: &mut WaylandState| {
+                state.update_media_progress()
+            });
+
+        if result.is_err() {
+            self.progress_timer_active = false;
+            warn!("failed to schedule media progress timer");
+        }
+    }
+
+    fn update_media_progress(&mut self) -> TimeoutAction {
+        if self.notification_visible
+            || !self.shared.borrow().expanded
+            || !self.media_playing
+            || self.media_length_us == 0
+        {
+            self.progress_timer_active = false;
+            return TimeoutAction::Drop;
+        }
+
+        if let Some((base, length, start)) = self.media_progress_base {
+            let elapsed = start.elapsed().as_micros() as u64;
+            let position = base.saturating_add(elapsed).min(length);
+            let progress = (position as f32 / length as f32).clamp(0.0, 1.0);
+            debug!(position, length, progress, "media progress tick");
+            if let Some(ui) = self
+                .shared
+                .borrow()
+                .ui
+                .clone()
+                .and_then(|weak| weak.upgrade())
+            {
+                ui.set_media_progress(progress);
+                ui.set_media_time_text(format_media_time(position, length).into());
+            }
+        }
+
+        TimeoutAction::ToDuration(Duration::from_secs(1))
     }
 
     fn schedule_animation_timer(&mut self) {
@@ -515,11 +577,57 @@ impl WaylandState {
                     }
                     .into(),
                 );
+                let initial = media
+                    .title
+                    .chars()
+                    .next()
+                    .and_then(|character| character.to_uppercase().next())
+                    .map(|character| character.to_string())
+                    .unwrap_or_else(|| "♪".to_string());
+                ui.set_media_initial(initial.into());
+
+                if self.last_art_path.as_deref() != media.art_path.as_deref() {
+                    self.last_art_path = media.art_path.clone();
+                    if let Some(artwork) = media.art_path.as_deref().and_then(load_artwork) {
+                        debug!(path = ?media.art_path, "media artwork loaded");
+                        ui.set_media_art(artwork);
+                        ui.set_media_art_available(true);
+                    } else {
+                        ui.set_media_art_available(false);
+                    }
+                }
+
+                self.media_playing = media.playing;
+                self.media_length_us = media.length_us.unwrap_or(0);
+                let position = media.position_us.unwrap_or(0).min(self.media_length_us);
+                self.media_progress_base = (self.media_length_us > 0).then_some((
+                    position,
+                    self.media_length_us,
+                    Instant::now(),
+                ));
+                let progress = if self.media_length_us > 0 {
+                    position as f32 / self.media_length_us as f32
+                } else {
+                    0.0
+                };
+                ui.set_media_progress(progress.clamp(0.0, 1.0));
+                ui.set_media_progress_available(self.media_length_us > 0);
+                ui.set_media_time_text(format_media_time(position, self.media_length_us).into());
+                self.ensure_progress_timer();
             }
             AppEvent::Media(None) => {
                 self.app_state.media = None;
+                self.last_art_path = None;
+                self.media_playing = false;
+                self.media_length_us = 0;
+                self.media_progress_base = None;
                 ui.set_media_title("Nothing playing".into());
                 ui.set_media_detail("No active player".into());
+                ui.set_media_initial("♪".into());
+                ui.set_media_art_available(false);
+                ui.set_media_progress(0.0);
+                ui.set_media_progress_available(false);
+                ui.set_media_time_text(String::new().into());
             }
             AppEvent::Volume(Some(volume)) => {
                 self.app_state.volume = Some(*volume);
@@ -540,7 +648,16 @@ impl WaylandState {
             }
             AppEvent::Notification(Some(notification)) => {
                 self.app_state.notification = Some(notification.clone());
+                self.notification_visible = true;
                 ui.set_notification_active(true);
+                let initial = notification
+                    .app
+                    .chars()
+                    .next()
+                    .and_then(|character| character.to_uppercase().next())
+                    .map(|character| character.to_string())
+                    .unwrap_or_else(|| "!".to_string());
+                ui.set_notification_initial(initial.into());
                 ui.set_notification_app(notification.app.clone().into());
                 ui.set_notification_summary(notification.summary.clone().into());
                 ui.set_notification_body(notification.body.clone().into());
@@ -564,11 +681,13 @@ impl WaylandState {
             }
             AppEvent::Notification(None) => {
                 self.app_state.notification = None;
+                self.notification_visible = false;
                 ui.set_notification_active(false);
                 ui.set_notification_app(String::new().into());
                 ui.set_notification_summary(String::new().into());
                 ui.set_notification_body(String::new().into());
                 self.shared.borrow_mut().clear_notification();
+                self.ensure_progress_timer();
             }
             AppEvent::System(Some(system)) => {
                 self.app_state.system = Some(*system);
@@ -711,6 +830,11 @@ impl SeatHandler for WaylandState {
         if capability == Capability::Pointer
             && let Some(pointer) = self.pointer.take()
         {
+            // A removed seat cannot deliver Leave, so clear Slint's hover and
+            // pressed state explicitly to avoid a stuck TouchArea.
+            self.window
+                .window()
+                .dispatch_event(WindowEvent::PointerExited);
             pointer.release();
         }
     }
@@ -1035,6 +1159,12 @@ impl WaylandRuntime {
             configured: false,
             pointer: None,
             anim_timer_active: false,
+            progress_timer_active: false,
+            notification_visible: false,
+            media_playing: false,
+            media_length_us: 0,
+            media_progress_base: None,
+            last_art_path: None,
             app_state: AppState::default(),
         };
 
@@ -1068,7 +1198,14 @@ impl WaylandRuntime {
         layer_surface.set_exclusive_zone(-1);
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer_surface.set_margin(TOP_MARGIN, 0, 0, 0);
+        // Install an empty input region before the first commit. Without this,
+        // the compositor would use the full 420x180 surface as the default
+        // input region until the first configured frame arrives.
+        let empty_input = state.compositor.wl_compositor().create_region(&qh, ());
+        surface.set_input_region(Some(&empty_input));
+        surface.set_opaque_region(None);
         surface.commit();
+        empty_input.destroy();
 
         if let (Some(manager), Some(viewporter)) = (fractional_scale_manager, viewporter) {
             let fractional_scale = manager.get_fractional_scale(&surface, &qh, ());
@@ -1135,13 +1272,15 @@ impl WaylandRuntime {
                 TimeoutAction::Drop
             },
         );
-        let _ = self.state.loop_handle.insert_source(
-            Timer::from_duration(Duration::from_millis(2400)),
-            |_, _, state: &mut WaylandState| {
-                state.shared.borrow_mut().toggle();
-                TimeoutAction::Drop
-            },
-        );
+        if std::env::var_os("GLASS_ISLAND_DEMO_HOLD").is_none() {
+            let _ = self.state.loop_handle.insert_source(
+                Timer::from_duration(Duration::from_millis(2400)),
+                |_, _, state: &mut WaylandState| {
+                    state.shared.borrow_mut().toggle();
+                    TimeoutAction::Drop
+                },
+            );
+        }
     }
 
     pub fn start(&mut self, ui: &Island) -> Result<(), Box<dyn Error>> {
@@ -1246,7 +1385,7 @@ fn select_output(output_state: &OutputState) -> (Option<wl_output::WlOutput>, i3
 /// `wl_region` only supports rectangles, so this keeps hit-testing and KWin's
 /// blur mask inside the visible pill rather than its bounding box.
 fn rounded_rect_bands(x: i32, y: i32, w: i32, h: i32, radius: f32) -> Vec<(i32, i32, i32, i32)> {
-    let mut bands = Vec::with_capacity(24);
+    let mut bands = Vec::with_capacity(40);
     if w <= 0 || h <= 0 {
         return bands;
     }
@@ -1257,7 +1396,7 @@ fn rounded_rect_bands(x: i32, y: i32, w: i32, h: i32, radius: f32) -> Vec<(i32, 
         return bands;
     }
 
-    const BANDS: i32 = 10;
+    const BANDS: i32 = 16;
     let band_height = (radius / BANDS as f32).ceil() as i32;
     if band_height <= 0 {
         bands.push((x, y, w, h));
@@ -1306,6 +1445,55 @@ fn map_button(button: u32) -> Option<slint::platform::PointerEventButton> {
         0x111 => Some(slint::platform::PointerEventButton::Right),
         0x112 => Some(slint::platform::PointerEventButton::Middle),
         _ => None,
+    }
+}
+
+fn load_artwork(path: &str) -> Option<slint::Image> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > 20 * 1024 * 1024 {
+        return None;
+    }
+
+    let source = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?;
+    let thumbnail = image::imageops::thumbnail(&source, 96, 96);
+    let (width, height) = thumbnail.dimensions();
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
+    for (target, source) in buffer.make_mut_slice().iter_mut().zip(thumbnail.pixels()) {
+        *target = slint::Rgba8Pixel {
+            r: source[0],
+            g: source[1],
+            b: source[2],
+            a: source[3],
+        };
+    }
+    Some(slint::Image::from_rgba8(buffer))
+}
+
+fn format_media_time(position_us: u64, length_us: u64) -> String {
+    if length_us == 0 {
+        return String::new();
+    }
+    format!(
+        "{} / {}",
+        format_duration(position_us.min(length_us)),
+        format_duration(length_us)
+    )
+}
+
+fn format_duration(microseconds: u64) -> String {
+    let total_seconds = microseconds / 1_000_000;
+    let seconds = total_seconds % 60;
+    let minutes = (total_seconds / 60) % 60;
+    let hours = total_seconds / 3600;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }
 
@@ -1407,6 +1595,14 @@ mod tests {
     }
 
     #[test]
+    fn pill_geometry_tracks_mid_animation() {
+        assert_eq!(
+            pill_geometry(420, 180, 256.0 + 136.0 * 0.5, 58.0 + 106.0 * 0.5, 0.5),
+            (48, 0, 324, 111, 31.0)
+        );
+    }
+
+    #[test]
     fn buffer_dimensions_follow_fractional_scale() {
         assert_eq!(buffer_dimensions(420, 180, 1.0), (420, 180));
         assert_eq!(buffer_dimensions(420, 180, 1.25), (525, 225));
@@ -1422,6 +1618,15 @@ mod tests {
         assert_eq!(map_button(0x111), Some(PointerEventButton::Right));
         assert_eq!(map_button(0x112), Some(PointerEventButton::Middle));
         assert_eq!(map_button(0x113), None);
+    }
+
+    #[test]
+    fn media_time_is_formatted_and_clamped() {
+        assert_eq!(format_media_time(0, 0), "");
+        assert_eq!(format_media_time(0, 225_000_000), "0:00 / 3:45");
+        assert_eq!(format_media_time(83_000_000, 225_000_000), "1:23 / 3:45");
+        assert_eq!(format_media_time(999_000_000, 225_000_000), "3:45 / 3:45");
+        assert_eq!(format_media_time(0, 3_725_000_000), "0:00 / 1:02:05");
     }
 
     #[test]

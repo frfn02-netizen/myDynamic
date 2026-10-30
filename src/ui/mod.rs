@@ -99,4 +99,63 @@ mod tests {
         assert_eq!(closes.get(), 1, "close button must invoke close-requested");
         assert_eq!(toggles.get(), 0, "close button click must not toggle");
     }
+
+    #[test]
+    fn expanded_body_click_toggles_but_host_outside_pill_does_not() {
+        let (ui, toggles, closes) = make_ui();
+        ui.set_expansion(1.0);
+        ui.window().request_redraw();
+
+        click(&ui, 200.0, 105.0);
+        assert_eq!(toggles.get(), 1, "expanded pill body must toggle");
+        assert_eq!(closes.get(), 0);
+
+        // Expanded pill occupies x=14..406, y=0..164. The host corner is
+        // outside it and must never receive a UI click.
+        click(&ui, 5.0, 170.0);
+        assert_eq!(toggles.get(), 1, "outside-pill host area must be inert");
+    }
+
+    #[test]
+    fn drag_out_of_pill_cancels_click() {
+        let (ui, toggles, closes) = make_ui();
+        click(&ui, 210.0, 29.0);
+        assert_eq!(toggles.get(), 1);
+
+        let window = ui.window();
+        let press = LogicalPosition::new(210.0, 29.0);
+        window.dispatch_event(WindowEvent::PointerMoved { position: press });
+        window.dispatch_event(WindowEvent::PointerPressed {
+            position: press,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(5.0, 170.0),
+        });
+        window.dispatch_event(WindowEvent::PointerReleased {
+            position: LogicalPosition::new(5.0, 170.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+        assert_eq!(toggles.get(), 1, "release outside the pill must not click");
+        assert_eq!(closes.get(), 0);
+    }
+
+    #[test]
+    fn hit_testing_stays_logical_at_fractional_scale() {
+        ensure_platform();
+        let ui = Island::new().expect("Island component");
+        let toggles = Rc::new(Cell::new(0));
+        let counter = toggles.clone();
+        ui.on_toggle_requested(move || counter.set(counter.get() + 1));
+        ui.window()
+            .dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 1.5 });
+        ui.window().set_size(LogicalSize::new(420.0, 180.0));
+
+        click(&ui, 210.0, 29.0);
+        assert_eq!(
+            toggles.get(),
+            1,
+            "surface-local logical coordinates must drive hit testing"
+        );
+    }
 }

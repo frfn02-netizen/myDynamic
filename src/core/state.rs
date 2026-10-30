@@ -70,6 +70,9 @@ pub struct MediaStatus {
     pub title: String,
     pub artist: String,
     pub playing: bool,
+    pub length_us: Option<u64>,
+    pub position_us: Option<u64>,
+    pub art_path: Option<String>,
 }
 
 #[derive(Debug, Default)]
