@@ -1,0 +1,296 @@
+component BatteryGlyph inherits Rectangle {
+    in property <float> level: 0.0;
+    in property <bool> charging: false;
+
+    width: 20px;
+    height: 10px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: #ffffff66;
+    background: transparent;
+
+    Rectangle {
+        x: parent.width + 1px;
+        y: 3px;
+        width: 2px;
+        height: 4px;
+        border-radius: 1px;
+        background: #ffffff66;
+    }
+
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: max(0px, (parent.width - 4px) * max(0.0, min(1.0, level)));
+        height: 6px;
+        border-radius: 1px;
+        background: charging ? #6ee7b7 : (level < 0.2 ? #ff8f8f : #cfe0ff);
+    }
+}
+
+export component Island inherits Window {
+    title: "Glass Island";
+    width: 420px;
+    height: 180px;
+    background: transparent;
+
+    in-out property <float> expansion: 0.0;
+    in-out property <float> battery-level: -1.0;
+    in-out property <bool> charging: false;
+    in-out property <string> battery-text: "";
+    in-out property <string> battery-percent-text: "";
+    in-out property <string> media-title: "Nothing playing";
+    in-out property <string> media-detail: "No active player";
+    in-out property <bool> volume-available: false;
+    in-out property <bool> volume-muted: false;
+    in-out property <string> volume-text: "";
+    in-out property <bool> notification-active: false;
+    in-out property <string> notification-app: "";
+    in-out property <string> notification-summary: "";
+    in-out property <string> notification-body: "";
+    in-out property <bool> system-available: false;
+    in-out property <string> cpu-text: "";
+    in-out property <string> ram-text: "";
+
+    callback toggle-requested();
+    callback close-requested();
+
+    out property <length> pill-width: 256px + (392px - 256px) * root.expansion;
+    out property <length> pill-height: 58px + (164px - 58px) * root.expansion;
+
+    pill := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 0px;
+        width: root.pill-width;
+        height: root.pill-height;
+        border-radius: min(root.pill-height / 2, 26px + 10px * root.expansion);
+        clip: true;
+
+        background: @linear-gradient(142deg, #363b48e6 0%, #1c2028d8 46%, #0c0e13e8 100%);
+        border-width: 1px;
+        border-color: #ffffff30;
+
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: max(0px, parent.width - 2px);
+            height: max(0px, parent.height - 2px);
+            border-radius: max(0px, parent.border-radius - 1px);
+            background: transparent;
+            border-width: 1px;
+            border-color: #ffffff12;
+        }
+
+        Rectangle {
+            x: 22px;
+            y: 1px;
+            width: max(0px, parent.width - 44px);
+            height: 1px;
+            background: @linear-gradient(90deg, #ffffff00 0%, #ffffff66 50%, #ffffff00 100%);
+        }
+
+        Rectangle {
+            x: 34px;
+            y: max(0px, parent.height - 1px);
+            width: max(0px, parent.width - 68px);
+            height: 1px;
+            background: @linear-gradient(90deg, #00000000 0%, #00000066 50%, #00000000 100%);
+        }
+
+        TouchArea {
+            clicked => {
+                root.toggle-requested();
+            }
+        }
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 58px;
+            background: transparent;
+
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 16px;
+                spacing: 10px;
+                alignment: center;
+
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: root.charging ? #6ee7b7 : #8ab4ff;
+                }
+
+                Text {
+                    text: "GLASS ISLAND";
+                    color: #f4f6ff;
+                    font-size: 13px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                if root.battery-level >= 0: Rectangle {
+                    width: 66px;
+                    height: 24px;
+                    border-radius: 12px;
+                    background: #ffffff10;
+                    border-width: 1px;
+                    border-color: #ffffff18;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 9px;
+                        spacing: 6px;
+                        alignment: center;
+
+                        BatteryGlyph {
+                            level: max(0.0, min(1.0, root.battery-level));
+                            charging: root.charging;
+                        }
+
+                        Text {
+                            text: root.battery-percent-text;
+                            color: #dfe7f6;
+                            font-size: 10px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            x: 0px;
+            y: 58px;
+            width: parent.width;
+            height: max(0px, parent.height - 58px);
+            background: transparent;
+            opacity: root.expansion;
+            clip: true;
+
+            Rectangle {
+                x: 20px;
+                y: 0px;
+                width: max(0px, parent.width - 40px);
+                height: 1px;
+                background: #ffffff14;
+            }
+
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 44px;
+                padding-top: 12px;
+                padding-bottom: 10px;
+                spacing: 4px;
+
+                Text {
+                    text: root.notification-active ? "NOTIFICATION" : "NOW PLAYING";
+                    color: #8d97aa;
+                    font-size: 9px;
+                    font-weight: 700;
+                    letter-spacing: 1.5px;
+                }
+
+                Text {
+                    text: root.notification-active ? root.notification-app : root.media-title;
+                    color: root.notification-active ? #c8d2e2 : #f4f6ff;
+                    font-size: root.notification-active ? 10px : 14px;
+                    font-weight: root.notification-active ? 500 : 600;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.notification-active ? root.notification-summary : root.media-detail;
+                    color: root.notification-active ? #f4f6ff : #99a3b7;
+                    font-size: root.notification-active ? 13px : 10px;
+                    font-weight: root.notification-active ? 600 : 400;
+                    overflow: elide;
+                }
+
+                if root.notification-active: Text {
+                    text: root.notification-body;
+                    color: #99a3b7;
+                    font-size: 10px;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: root.battery-text;
+                        color: #99a3b7;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+
+                    if root.volume-available: Rectangle {
+                        width: 1px;
+                        height: 10px;
+                        background: #ffffff20;
+                    }
+
+                    if root.volume-available: Text {
+                        text: root.volume-text;
+                        color: root.volume-muted ? #ff9f9f : #99a3b7;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    if root.system-available: Text {
+                        text: root.cpu-text;
+                        color: #99a3b7;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+
+                    if root.system-available: Text {
+                        text: root.ram-text;
+                        color: #99a3b7;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            close := Rectangle {
+                x: max(0px, parent.width - 34px);
+                y: 12px;
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: close-ta.pressed ? #ffffff2a : #ffffff10;
+                border-width: 1px;
+                border-color: #ffffff1c;
+                visible: root.expansion > 0.55;
+
+                Text {
+                    text: "×";
+                    color: #cbd4e4;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                close-ta := TouchArea {
+                    enabled: root.expansion > 0.55;
+                    clicked => {
+                        root.close-requested();
+                    }
+                }
+            }
+        }
+    }
+}

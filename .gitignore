@@ -1,0 +1,46 @@
+# Rust build output
+/target/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editor state
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+.opencode/
+
+# Local agent configuration (not part of the application)
+/opencode.json
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and debug output
+*.log
+/logs/
+/perf.data
+/perf.data.old
+
+# Temporary screenshots and captures
+/screenshots/
+/captures/
+*.tmp
+
+# Local benchmark artifacts
+/benchmarks/
+/bench-results/
+*.profraw
+*.profdata
+
+# Runtime sockets and lock files
+*.sock
+*.pid
+/glass-island.lock
+/.glass-island.lock
